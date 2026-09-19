@@ -1,0 +1,41 @@
+# Production stack. Started by the `deploy` job on the self-hosted runner,
+# i.e. inside the runner's own Docker daemon (see deploy/runner.compose.yaml).
+# Port 8080 is published inside the runner container, which maps it to host 8585.
+name: person-service
+
+services:
+  postgres:
+    image: postgres:13
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: persons
+      POSTGRES_USER: program
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U program -d persons"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: person-service:latest
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: persons
+      POSTGRES_USER: program
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

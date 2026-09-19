@@ -7,15 +7,120 @@ on:
     branches:
       - master
 jobs:
-  build:
-    name: Autograding
+  test:
+    name: Build and unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # TODO build, test and deploy project
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run unit tests
+        working-directory: backend
+        run: npm test
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build docker image
+        run: docker build -t person-service:${{ github.sha }} .
+
+  # Runs on the self-hosted runner in the homelab (deploy/runner.compose.yaml).
+  # The stack is started in the runner's own Docker daemon; host port 8585 leads to it.
+  deploy:
+    name: Deploy to homelab
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, homelab]
+    concurrency:
+      group: homelab-deploy
+      cancel-in-progress: false
+    env:
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for Docker daemon
+        run: timeout 60 sh -c 'until docker info > /dev/null 2>&1; do sleep 2; done'
+
+      - name: Start stack
+        run: docker compose -f deploy/compose.yaml up -d --build --remove-orphans
+
+      - name: Wait for the service to become healthy
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/manage/health > /dev/null; then
+              echo "Service is up"
+              exit 0
+            fi
+            echo "Attempt $attempt: service is not ready yet"
+            sleep 2
+          done
+          docker compose -f deploy/compose.yaml logs --tail 100
+          exit 1
+
+      - name: Remove dangling images
+        if: always()
+        run: docker image prune -f
+
+  api-tests:
+    name: Autograding
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The public address is kept in the repository variable APP_BASE_URL
+      # (e.g. http://203.0.113.10:8585); the value committed in the file is the fallback.
+      - name: Resolve service address
+        env:
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+        run: |
+          ENV_FILE="postman/[inst][heroku] Lab1.postman_environment.json"
+          if [ -n "$APP_BASE_URL" ]; then
+            jq --arg url "${APP_BASE_URL%/}" \
+              '(.values[] | select(.key == "baseUrl") | .value) = $url' \
+              "$ENV_FILE" > env.tmp && mv env.tmp "$ENV_FILE"
+          fi
+          BASE_URL=$(jq -r '.values[] | select(.key == "baseUrl") | .value' "$ENV_FILE")
+          if [ -z "$BASE_URL" ]; then
+            echo "::error::Set the APP_BASE_URL repository variable or baseUrl in $ENV_FILE"
+            exit 1
+          fi
+          echo "BASE_URL=$BASE_URL" >> "$GITHUB_ENV"
+
+      - name: Wait for the service to be reachable from the internet
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -sf "$BASE_URL/manage/health" > /dev/null; then
+              echo "Service is reachable at $BASE_URL"
+              exit 0
+            fi
+            echo "Attempt $attempt: $BASE_URL is not reachable yet"
+            sleep 5
+          done
+          echo "::error::$BASE_URL is not reachable, check port forwarding of 8585 on the router"
+          exit 1
 
       - name: Run API Tests
         uses: matt-ball/newman-action@master

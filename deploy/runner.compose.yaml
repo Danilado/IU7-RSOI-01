@@ -1,0 +1,36 @@
+# Portainer stack: GitHub Actions self-hosted runner with its own Docker daemon (DinD).
+# The deploy job runs `docker compose` against this inner daemon, so the application
+# lives inside this container and is exposed through the port mapping below.
+#
+# Stack environment variables (Portainer -> Stacks -> Add stack -> Environment variables):
+#   REPO_URL      https://github.com/<owner>/<repo>
+#   ACCESS_TOKEN  classic PAT with the `repo` scope (used to obtain runner tokens)
+services:
+  github-runner:
+    image: myoung34/github-runner:latest
+    container_name: github-runner
+    restart: unless-stopped
+    # Required to run dockerd inside the container.
+    privileged: true
+    # A restarted container keeps /var/run from the previous run; a stale docker.pid
+    # stops the inner dockerd from starting, so runtime state is cleared first.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - rm -rf /var/run/docker.pid /var/run/docker-ssd.pid /var/run/docker && exec /entrypoint.sh ./bin/Runner.Listener run --startuptype service
+    environment:
+      REPO_URL: ${REPO_URL}
+      ACCESS_TOKEN: ${ACCESS_TOKEN}
+      RUNNER_SCOPE: repo
+      RUNNER_NAME: homelab
+      LABELS: homelab
+      START_DOCKER_SERVICE: "true"
+    ports:
+      # host 8585 -> person-service (published on 8080 by the inner Docker daemon)
+      - "8585:8080"
+    volumes:
+      # Inner Docker state: images, containers and the Postgres volume survive restarts.
+      - docker-data:/var/lib/docker
+
+volumes:
+  docker-data:
