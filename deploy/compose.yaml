@@ -1,6 +1,5 @@
 # Production stack. Started by the `deploy` job on the self-hosted runner,
-# i.e. inside the runner's own Docker daemon (see deploy/runner.compose.yaml).
-# Port 8080 is published inside the runner container, which maps it to host 8585.
+# which is installed on the homelab host and uses the host Docker daemon.
 name: person-service
 
 services:
@@ -32,7 +31,7 @@ services:
       POSTGRES_USER: program
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "8080:8080"
+      - "8585:8080"
     depends_on:
       postgres:
         condition: service_healthy

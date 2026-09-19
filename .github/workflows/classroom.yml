@@ -43,8 +43,8 @@ jobs:
       - name: Build docker image
         run: docker build -t person-service:${{ github.sha }} .
 
-  # Runs on the self-hosted runner in the homelab (deploy/runner.compose.yaml).
-  # The stack is started in the runner's own Docker daemon; host port 8585 leads to it.
+  # Runs on the self-hosted runner installed on the homelab host (systemd service).
+  # The stack is started in the host Docker daemon and published on host port 8585.
   deploy:
     name: Deploy to homelab
     needs: test
@@ -58,8 +58,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Wait for Docker daemon
-        run: timeout 60 sh -c 'until docker info > /dev/null 2>&1; do sleep 2; done'
+      - name: Check Docker access
+        run: |
+          if ! docker info > /dev/null 2>&1; then
+            echo "::error::Runner user $(id -un) cannot reach Docker: add it to the docker group and restart the runner service"
+            exit 1
+          fi
 
       - name: Start stack
         run: docker compose -f deploy/compose.yaml up -d --build --remove-orphans
@@ -67,7 +71,7 @@ jobs:
       - name: Wait for the service to become healthy
         run: |
           for attempt in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8080/manage/health > /dev/null; then
+            if curl -sf http://127.0.0.1:8585/manage/health > /dev/null; then
               echo "Service is up"
               exit 0
             fi
